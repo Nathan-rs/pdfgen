@@ -29,11 +29,13 @@ URL="https://github.com/$OWNER/$REPO/releases/download/$VERSION/pdfgen-linux-$AR
 
 echo "Baixando $URL..."
 
-curl -L "$URL" -o pdfgen
+TMP_FILE="$(mktemp)"
 
-chmod +x pdfgen
+curl -fL "$URL" -o "$TMP_FILE"
 
-sudo mv pdfgen /usr/local/bin/pdfgen
+chmod +x "$TMP_FILE"
+
+sudo mv "$TMP_FILE" /usr/local/bin/pdfgen
 
 echo
 echo "Instalação concluída!"
