@@ -1,0 +1,8 @@
+# Assets locais
+assets/*.png
+assets/*.jpg
+assets/*.jpeg
+
+# Cache da aplicação
+.cache/
+pdfgen-cache/
