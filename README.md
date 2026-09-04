@@ -4,6 +4,12 @@ Aplicação CLI em Go para gerar documentos PDF tabulares a partir de arquivos C
 
 ---
 
+## Demonstração
+
+![Demonstração do PDFGEN](./assets/demo.gif)
+
+---
+
 ## Funcionalidades
 
 * Leitura de arquivos CSV (separador `;`) via streaming — sem carregar o arquivo inteiro em memória.
