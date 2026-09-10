@@ -10,7 +10,6 @@ package pdf
 // parciais são unidos, na ordem original, via pdfcpu.
 
 import (
-	"bufio"
 	"encoding/csv"
 	"fmt"
 	"io"
@@ -68,11 +67,10 @@ func GenerateConcurrent(csvFile, output, cover string, workers int, showProgress
 	}
 	defer os.RemoveAll(tmpDir)
 
-	// Contagem prévia (best-effort) só para exibir % e ETA na barra de
-	// progresso. É uma passagem rápida contando linhas físicas do
-	// arquivo — não faz parsing de CSV, então em campos com quebra de
-	// linha dentro de aspas o número pode ficar levemente impreciso.
-	// Isso NÃO afeta a geração em si, só a exibição do progresso.
+	// Contagem prévia usando encoding/csv de verdade (mesmo decoder
+	// BOM-aware da leitura real) — número exato de registros, não uma
+	// estimativa por linhas físicas. Custa uma segunda leitura completa
+	// do arquivo, mas é ordens de magnitude mais rápida que a renderização.
 	var reporter *progressReporter
 	if showProgress {
 		total, err := countRecords(csvFile)
@@ -169,7 +167,7 @@ func GenerateConcurrent(csvFile, output, cover string, workers int, showProgress
 	sort.Strings(parts)
 
 	if showProgress {
-		fmt.Fprintf(os.Stderr, "Unindo %d PDFs parciais...\n", len(parts))
+		fmt.Fprintf(os.Stderr, "Unindo %s PDFs parciais...\n", formatNumber(int64(len(parts))))
 	}
 
 	// ATENÇÃO: a assinatura de api.MergeCreateFile varia entre versões
@@ -186,9 +184,9 @@ func GenerateConcurrent(csvFile, output, cover string, workers int, showProgress
 	return nil
 }
 
-// countRecords faz uma contagem rápida de linhas físicas do arquivo,
-// só para alimentar a barra de progresso (não é usada na geração real,
-// que usa encoding/csv corretamente). Desconta 1 linha do cabeçalho.
+// countRecords conta os registros de dados do CSV usando o mesmo parser
+// e decoder (BOM-aware) da geração real — número exato, não estimativa.
+// Usada só para alimentar a barra de progresso.
 func countRecords(csvFile string) (int, error) {
 	f, err := os.Open(csvFile)
 	if err != nil {
@@ -196,19 +194,28 @@ func countRecords(csvFile string) (int, error) {
 	}
 	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024) // tolera linhas longas
+	decoder := unicode.BOMOverride(unicode.UTF8.NewDecoder())
+	r := csv.NewReader(transform.NewReader(f, decoder))
+	r.Comma = ';'
+	r.ReuseRecord = true // não precisamos manter os dados, só contar
 
-	count := 0
-	for scanner.Scan() {
-		count++
-	}
-	if err := scanner.Err(); err != nil {
+	if _, err := r.Read(); err != nil { // descarta o cabeçalho
+		if err == io.EOF {
+			return 0, nil
+		}
 		return 0, err
 	}
 
-	if count > 0 {
-		count-- // desconta o cabeçalho
+	count := 0
+	for {
+		_, err := r.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return 0, err
+		}
+		count++
 	}
 	return count, nil
 }
