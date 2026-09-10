@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/pdfcpu/pdfcpu/pkg/api"
+	"golang.org/x/text/encoding/unicode"
+	"golang.org/x/text/transform"
 )
 
 // defaultBatchSize: lotes pequenos demais aumentam o overhead do merge
@@ -49,7 +51,10 @@ func GenerateConcurrent(csvFile, output, cover string, workers int, showProgress
 	}
 	defer f.Close()
 
-	reader := csv.NewReader(f)
+	// BOMOverride detecta e descarta um BOM (UTF-8/UTF-16LE/UTF-16BE) no
+	// início do arquivo, comum em CSVs exportados pelo Excel/Windows.
+	decoder := unicode.BOMOverride(unicode.UTF8.NewDecoder())
+	reader := csv.NewReader(transform.NewReader(f, decoder))
 	reader.Comma = ';'
 
 	headers, err := reader.Read()

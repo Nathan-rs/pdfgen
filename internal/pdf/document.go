@@ -6,6 +6,8 @@ import (
 	"os"
 
 	"github.com/phpdave11/gofpdf"
+	"golang.org/x/text/encoding/unicode"
+	"golang.org/x/text/transform"
 )
 
 const (
@@ -40,7 +42,11 @@ func New(csvFile, cover string) (*Document, error) {
 		return nil, err
 	}
 
-	r := csv.NewReader(f)
+	// BOMOverride detecta e descarta um BOM (UTF-8/UTF-16LE/UTF-16BE) no
+	// início do arquivo, comum em CSVs exportados pelo Excel/Windows.
+	// Sem BOM, cai no decoder de fallback (UTF-8) sem alterar os bytes.
+	decoder := unicode.BOMOverride(unicode.UTF8.NewDecoder())
+	r := csv.NewReader(transform.NewReader(f, decoder))
 	r.Comma = ';'
 
 	headers, err := r.Read()
