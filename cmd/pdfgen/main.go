@@ -20,6 +20,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
 			os.Exit(1)
 		}
+	case "merge":
+		if err := cli.Merge(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			os.Exit(1)
+		}
 
 	case "-h", "--help", "help":
 
