@@ -6,3 +6,4 @@ assets/*.jpeg
 # Cache da aplicação
 .cache/
 pdfgen-cache/
+dist/

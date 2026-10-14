@@ -6,6 +6,8 @@ import (
 	"os"
 
 	"github.com/phpdave11/gofpdf"
+	"golang.org/x/text/encoding/unicode"
+	"golang.org/x/text/transform"
 )
 
 const (
@@ -32,16 +34,19 @@ type Document struct {
 	recordCount int
 }
 
-// Largura total disponível para a tabela
-// var usableWidth = pageWidth - marginLeft - marginRight
-
+// New abre o CSV e prepara um Document para o fluxo original,
+// sequencial: New + Save lê o arquivo inteiro e grava o PDF final.
 func New(csvFile, cover string) (*Document, error) {
 	f, err := os.Open(csvFile)
 	if err != nil {
 		return nil, err
 	}
 
-	r := csv.NewReader(f)
+	// BOMOverride detecta e descarta um BOM (UTF-8/UTF-16LE/UTF-16BE) no
+	// início do arquivo, comum em CSVs exportados pelo Excel/Windows.
+	// Sem BOM, cai no decoder de fallback (UTF-8) sem alterar os bytes.
+	decoder := unicode.BOMOverride(unicode.UTF8.NewDecoder())
+	r := csv.NewReader(transform.NewReader(f, decoder))
 	r.Comma = ';'
 
 	headers, err := r.Read()
@@ -50,13 +55,32 @@ func New(csvFile, cover string) (*Document, error) {
 		return nil, err
 	}
 
+	d := newDocument(headers, cover, 0)
+	d.file = f
+	d.reader = r
+
+	return d, nil
+}
+
+// NewBatch cria um Document que não lê CSV nenhum: os registros chegam
+// via AddRecords. Usado pela geração concorrente, onde cada worker tem
+// seu próprio Document/gofpdf.Fpdf (gofpdf.Fpdf não é thread-safe, então
+// não pode ser compartilhado entre goroutines).
+//
+// startIndex é o número de registros já escritos em lotes anteriores —
+// serve só para o zebrado (linhas alternadas) continuar coerente entre
+// as partes depois do merge; não afeta corretude.
+func NewBatch(headers []string, cover string, startIndex int) *Document {
+	return newDocument(headers, cover, startIndex)
+}
+
+func newDocument(headers []string, cover string, startIndex int) *Document {
 	d := &Document{
-		file:        f,
-		reader:      r,
 		pdf:         gofpdf.New("P", "mm", "A4", ""),
 		headers:     headers,
 		cover:       cover,
 		usableWidth: pageWidth - marginLeft - marginRight,
+		recordCount: startIndex,
 	}
 
 	d.calculateColWidths()
@@ -64,68 +88,91 @@ func New(csvFile, cover string) (*Document, error) {
 	d.pdf.SetAutoPageBreak(false, marginBottom)
 	d.newPage()
 
-	return d, nil
+	return d
 }
 
+// Save lê o restante do CSV (via New) e grava o PDF final.
+// Mantido para o caminho sequencial / compatibilidade.
 func (d *Document) Save(output string) error {
-	defer d.file.Close()
+	if d.file != nil {
+		defer d.file.Close()
+	}
 
+	if d.reader != nil {
+		for {
+			record, err := d.reader.Read()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return err
+			}
+			d.writeRecord(record)
+		}
+	}
+
+	return d.pdf.OutputFileAndClose(output)
+}
+
+// AddRecords renderiza um lote de registros já lidos em memória.
+// Usado pela geração concorrente (ver internal/pdf/concurrent.go).
+func (d *Document) AddRecords(records [][]string) {
+	for _, record := range records {
+		d.writeRecord(record)
+	}
+}
+
+// Close finaliza e grava o PDF. Usado em conjunto com NewBatch/AddRecords.
+func (d *Document) Close(output string) error {
+	return d.pdf.OutputFileAndClose(output)
+}
+
+func (d *Document) writeRecord(record []string) {
 	tr := d.pdf.UnicodeTranslatorFromDescriptor("")
 
-	for {
-		record, err := d.reader.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return err
-		}
+	d.recordCount++
+	d.pdf.SetFont("Arial", "", 5.5)
+	d.pdf.SetTextColor(50, 50, 50)
+	d.pdf.SetDrawColor(220, 220, 220)
 
-		d.recordCount++
-		d.pdf.SetFont("Arial", "", 5.5)
-		d.pdf.SetTextColor(50, 50, 50)
-		d.pdf.SetDrawColor(220, 220, 220)
+	const lineH = 4.5
+	rowHeight := lineH
 
-		const lineH = 4.5
-		rowHeight := lineH
-
-		for i, w := range d.colWidths {
-			v := ""
-			if i < len(record) {
-				v = record[i]
-			}
-
-			lines := d.pdf.SplitLines([]byte(tr(v)), w-1)
-			if h := float64(len(lines)) * lineH; h > rowHeight {
-				rowHeight = h
-			}
+	for i, w := range d.colWidths {
+		v := ""
+		if i < len(record) {
+			v = record[i]
 		}
 
-		if d.pdf.GetY()+rowHeight >= maxY {
-			d.newPage()
+		lines := d.pdf.SplitLines([]byte(tr(v)), w-1)
+		if h := float64(len(lines)) * lineH; h > rowHeight {
+			rowHeight = h
 		}
-
-		startY := d.pdf.GetY()
-		fill := d.recordCount%2 == 0
-		if fill {
-			d.pdf.SetFillColor(245, 245, 245)
-		} else {
-			d.pdf.SetFillColor(255, 255, 255)
-		}
-		d.pdf.Rect(marginLeft, startY, d.usableWidth, rowHeight, "F")
-
-		for i, w := range d.colWidths {
-			v := ""
-			if i < len(record) {
-				v = record[i]
-			}
-			d.pdf.Rect(d.colX[i], startY, w, rowHeight, "D")
-			d.pdf.SetXY(d.colX[i]+0.5, startY)
-			d.pdf.MultiCell(w-0.5, lineH, tr(v), "", "L", false)
-		}
-		d.pdf.SetY(startY + rowHeight)
 	}
-	return d.pdf.OutputFileAndClose(output)
+
+	if d.pdf.GetY()+rowHeight >= maxY {
+		d.newPage()
+	}
+
+	startY := d.pdf.GetY()
+	fill := d.recordCount%2 == 0
+	if fill {
+		d.pdf.SetFillColor(245, 245, 245)
+	} else {
+		d.pdf.SetFillColor(255, 255, 255)
+	}
+	d.pdf.Rect(marginLeft, startY, d.usableWidth, rowHeight, "F")
+
+	for i, w := range d.colWidths {
+		v := ""
+		if i < len(record) {
+			v = record[i]
+		}
+		d.pdf.Rect(d.colX[i], startY, w, rowHeight, "D")
+		d.pdf.SetXY(d.colX[i]+0.5, startY)
+		d.pdf.MultiCell(w-0.5, lineH, tr(v), "", "L", false)
+	}
+	d.pdf.SetY(startY + rowHeight)
 }
 
 func (d *Document) addBackground() {
@@ -190,7 +237,7 @@ func (d *Document) calculateColWidths() {
 	}
 }
 
-// Calcula a altura do headder do csv
+// Calcula a altura do header do csv
 func (d *Document) headerHeight() float64 {
 	tr := d.pdf.UnicodeTranslatorFromDescriptor("")
 
